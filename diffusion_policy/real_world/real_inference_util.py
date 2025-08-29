@@ -32,7 +32,18 @@ def get_real_obs_dict(
             if 'pose' in key and shape == (2,):
                 # take X,Y coordinates
                 this_data_in = this_data_in[...,[0,1]]
+            # elif 'gripper_width' in key and shape == (1,):
+            #     this_data_in = this_data_in
+
             obs_dict_np[key] = this_data_in
+
+        if 'robot_eef_pose' in obs_dict_np and 'gripper_width' in obs_dict_np:
+            obs_dict_np['robot_eef_pose'] = np.concatenate(
+                [obs_dict_np['robot_eef_pose'], obs_dict_np['gripper_width']],
+                axis=-1
+            )
+    # print("DEBUG obs_dict shapes:", {k: v.shape for k, v in obs_dict_np.items()})
+
     return obs_dict_np
 
 

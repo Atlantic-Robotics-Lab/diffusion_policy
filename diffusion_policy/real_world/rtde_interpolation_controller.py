@@ -32,7 +32,7 @@ class RTDEInterpolationController(mp.Process):
             frequency=125, 
             lookahead_time=0.1, 
             gain=300,
-            max_pos_speed=0.25, # 5% of max speed
+            max_pos_speed=0.05, # 5% of max speed
             max_rot_speed=0.16, # 5% of max speed
             launch_timeout=3,
             tcp_offset_pose=None,
@@ -41,7 +41,7 @@ class RTDEInterpolationController(mp.Process):
             joints_init=None,
             joints_init_speed=1.05,
             soft_real_time=False,
-            verbose=False,
+            verbose=True,
             receive_keys=None,
             get_max_k=128,
             ):
@@ -136,6 +136,8 @@ class RTDEInterpolationController(mp.Process):
         self.input_queue = input_queue
         self.ring_buffer = ring_buffer
         self.receive_keys = receive_keys
+        if self.verbose:
+            print("RTDE Established")
     
     # ========= launch method ===========
     def start(self, wait=True):
@@ -330,6 +332,9 @@ class RTDEInterpolationController(mp.Process):
                             curr_time=curr_time,
                             last_waypoint_time=last_waypoint_time
                         )
+                        if self.verbose:
+                            print("[RTDEPositionalController] SCHEDULE_WAYPOINT New pose target:{} ".format(
+                                target_pose))
                         last_waypoint_time = target_time
                     else:
                         keep_running = False
@@ -343,8 +348,8 @@ class RTDEInterpolationController(mp.Process):
                     self.ready_event.set()
                 iter_idx += 1
 
-                if self.verbose:
-                    print(f"[RTDEPositionalController] Actual frequency {1/(time.perf_counter() - t_start)}")
+                # if self.verbose:
+                    # print(f"[RTDEPositionalController] Actual frequency {1/(time.perf_counter() - t_start.total_seconds())}")
 
         finally:
             # manditory cleanup

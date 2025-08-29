@@ -13,10 +13,12 @@ from diffusion_policy.common.timestamp_accumulator import (
     TimestampActionAccumulator,
     align_timestamps
 )
+from diffusion_policy.real_world.robotiq_gripper import RobotiqController #$%
 from diffusion_policy.real_world.multi_camera_visualizer import MultiCameraVisualizer
 from diffusion_policy.common.replay_buffer import ReplayBuffer
 from diffusion_policy.common.cv2_util import (
     get_image_transform, optimal_row_cols)
+from scipy.spatial.transform import Rotation as R
 
 DEFAULT_OBS_KEY_MAP = {
     # robot
@@ -24,6 +26,8 @@ DEFAULT_OBS_KEY_MAP = {
     'ActualTCPSpeed': 'robot_eef_pose_vel',
     'ActualQ': 'robot_joint',
     'ActualQd': 'robot_joint_vel',
+    'gripper_width': 'gripper_width', #$%
+    'robot_eef_pose_6d_rot': 'robot_eef_pose_6d_rot',
     # timestamps
     'step_idx': 'step_idx',
     'timestamp': 'timestamp'
@@ -34,6 +38,7 @@ class RealEnv:
             # required params
             output_dir,
             robot_ip,
+            use_gripper=False,
             # env params
             frequency=10,
             n_obs_steps=2,
@@ -47,8 +52,10 @@ class RealEnv:
             max_pos_speed=0.25,
             max_rot_speed=0.6,
             # robot
-            tcp_offset=0.13,
-            init_joints=False,
+            #tcp_offset=0.13,
+            #init_joints=False,
+            tcp_offset=0.0, # $%
+            init_joints=True, # $%
             # video capture params
             video_capture_fps=30,
             video_capture_resolution=(1280,720),
@@ -158,7 +165,8 @@ class RealEnv:
         robot = RTDEInterpolationController(
             shm_manager=shm_manager,
             robot_ip=robot_ip,
-            frequency=125, # UR5 CB3 RTDE
+            #frequency=125, # UR5 CB3 RTDE
+            frequency=500, # UR5e RTDE $%
             lookahead_time=0.1,
             gain=300,
             max_pos_speed=max_pos_speed*cube_diag,
@@ -170,10 +178,13 @@ class RealEnv:
             joints_init=j_init,
             joints_init_speed=1.05,
             soft_real_time=False,
-            verbose=False,
+            verbose=True,
             receive_keys=None,
             get_max_k=max_obs_buffer_size
             )
+        
+        self.gripper = RobotiqController(shm_manager=shm_manager, robot_ip=robot_ip,frequency=200) #$%
+
         self.realsense = realsense
         self.robot = robot
         self.multi_cam_vis = multi_cam_vis
@@ -200,11 +211,13 @@ class RealEnv:
     # ======== start-stop API =============
     @property
     def is_ready(self):
-        return self.realsense.is_ready and self.robot.is_ready
+        #return self.realsense.is_ready and self.robot.is_ready
+        return self.realsense.is_ready and self.robot.is_ready and self.gripper.is_ready #$%
     
     def start(self, wait=True):
         self.realsense.start(wait=False)
         self.robot.start(wait=False)
+        self.gripper.start(wait=False) #$%
         if self.multi_cam_vis is not None:
             self.multi_cam_vis.start(wait=False)
         if wait:
@@ -215,6 +228,7 @@ class RealEnv:
         if self.multi_cam_vis is not None:
             self.multi_cam_vis.stop(wait=False)
         self.robot.stop(wait=False)
+        self.gripper.stop(wait=False) #$%
         self.realsense.stop(wait=False)
         if wait:
             self.stop_wait()
@@ -222,12 +236,14 @@ class RealEnv:
     def start_wait(self):
         self.realsense.start_wait()
         self.robot.start_wait()
+        self.gripper.start_wait() #$%
         if self.multi_cam_vis is not None:
             self.multi_cam_vis.start_wait()
     
     def stop_wait(self):
         self.robot.stop_wait()
         self.realsense.stop_wait()
+        self.gripper.stop_wait() #$%
         if self.multi_cam_vis is not None:
             self.multi_cam_vis.stop_wait()
 
@@ -254,6 +270,39 @@ class RealEnv:
         # 125 hz, robot_receive_timestamp
         last_robot_data = self.robot.get_all_state()
         # both have more than n_obs_steps data
+
+        # gripper data
+        last_gripper_data = self.gripper.get_all_state()
+
+        # for each robot data frame, find the nearest gripper data frame and merge them
+        timestamps = last_robot_data['robot_receive_timestamp']
+        gripper_timestamps = last_gripper_data['gripper_receive_timestamp']
+        robot_to_gripper_idx = []
+        for i in range(len(timestamps)):
+            is_before_idxs = np.nonzero(gripper_timestamps < timestamps[i])[0]
+            this_idx = 0
+            if len(is_before_idxs) > 0:
+                this_idx = is_before_idxs[-1]
+            else:
+                raise ValueError("Gripper data is not enough")
+            robot_to_gripper_idx.append(this_idx)
+
+        last_robot_data['gripper_width'] = np.zeros((len(timestamps),1))
+        # copy the matching gripper data into the observation structure
+        for robot_idx, gripper_idx in enumerate(robot_to_gripper_idx):
+            last_robot_data['gripper_width'][robot_idx] = last_gripper_data['current_width'][gripper_idx]
+
+
+        # add a new key to the observation structure
+        #  that uses a 6d reprensenation of the orientationof the eef,  as the first two unit vectors (x,y)
+        # cf https://openaccess.thecvf.com/content_CVPR_2019/supplemental/Zhou_On_the_Continuity_CVPR_2019_supplemental.pdf
+        # or DP paper
+        last_robot_data['robot_eef_pose_6d_rot'] = np.zeros((len(timestamps), 9))
+        last_robot_data['robot_eef_pose_6d_rot'][:,:3] = last_robot_data['ActualTCPPose'][:,:3]
+
+        for i in range(len(timestamps)):
+            from diffusion_policy.real_world.utils import convert_rotvec_to_6D_representation as convert
+            last_robot_data['robot_eef_pose_6d_rot'][i,3:] = convert(last_robot_data['ActualTCPPose'][i,3:])
 
         # align camera obs timestamps
         dt = 1 / self.frequency
@@ -319,6 +368,10 @@ class RealEnv:
             stages = np.zeros_like(timestamps, dtype=np.int64)
         elif not isinstance(stages, np.ndarray):
             stages = np.array(stages, dtype=np.int64)
+        print(actions.shape[1])
+        assert actions.shape[1] == 10, "env expects x,y,z,rxx,rxy,rxz,ryx,ryy,ryz,gripper_width" #$%
+
+        from diffusion_policy.real_world.utils import convert_6D_rotation_to_rotvec as convert #$%
 
         # convert action to pose
         receive_time = time.time()
@@ -327,10 +380,28 @@ class RealEnv:
         new_timestamps = timestamps[is_new]
         new_stages = stages[is_new]
 
+        # split the actions into the first 6, which are the robot pose and the last one , which is the gripper action
+        robot_actions = new_actions[:,:9]
+        # convert the robot actions to a 6D representation 
+        rotvec_robot_actions = np.zeros((len(robot_actions), 6))
+        for i in range(len(robot_actions)):
+            rotvec_robot_actions[i,:3] = robot_actions[i,:3]
+            rotvec_robot_actions[i,3:] = convert(robot_actions[i,3:])
+
+        gripper_actions = new_actions[:,9]
+
         # schedule waypoints
         for i in range(len(new_actions)):
             self.robot.schedule_waypoint(
-                pose=new_actions[i],
+                #pose=new_actions[i],
+                pose=rotvec_robot_actions[i],
+                target_time=new_timestamps[i]
+            )
+
+        # schedule gripper actions
+        for i in range(len(new_actions)):
+            self.gripper.schedule_waypoint(
+                width=gripper_actions[i],
                 target_time=new_timestamps[i]
             )
         
@@ -347,7 +418,17 @@ class RealEnv:
             )
     
     def get_robot_state(self):
-        return self.robot.get_state()
+        #return self.robot.get_state()
+        robot_state =  self.robot.get_state()
+        # add the 6D representation of the orientation of the eef
+        from diffusion_policy.real_world.utils import convert_rotvec_to_6D_representation as convert
+        robot_state['robot_eef_pose_6d_rot'] = np.zeros(9,)
+        robot_state['robot_eef_pose_6d_rot'][:3] = robot_state['ActualTCPPose'][:3]
+        robot_state['robot_eef_pose_6d_rot'][3:] = convert(robot_state['ActualTCPPose'][3:])
+        return robot_state
+
+    def get_gripper_state(self):
+        return self.gripper.get_state()
 
     # recording API
     def start_episode(self, start_time=None):

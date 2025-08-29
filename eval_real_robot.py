@@ -177,7 +177,7 @@ def main(input, output, robot_ip, match_dataset, match_episode,
                     lambda x: torch.from_numpy(x).unsqueeze(0).to(device))
                 result = policy.predict_action(obs_dict)
                 action = result['action'][0].detach().to('cpu').numpy()
-                assert action.shape[-1] == 2
+                assert action.shape[-1] == 6
                 del result
 
             print('Ready!')
@@ -185,10 +185,11 @@ def main(input, output, robot_ip, match_dataset, match_episode,
                 # ========= human control loop ==========
                 print("Human in control!")
                 state = env.get_robot_state()
-                target_pose = state['TargetTCPPose']
+                target_pose = state['robot_eef_pose_6d_rot']
+                # print(target_pose)
                 t_start = time.monotonic()
                 iter_idx = 0
-                while True:
+                while False:
                     # calculate timing
                     t_cycle_end = t_start + (iter_idx + 1) * dt
                     t_sample = t_cycle_end - command_latency
@@ -291,6 +292,13 @@ def main(input, output, robot_ip, match_dataset, match_episode,
                         obs_timestamps = obs['timestamp']
                         print(f'Obs latency {time.time() - obs_timestamps[-1]}')
 
+                        # ========CHECK CHANGES IF NEEDED OR CORRECT THE ACTION FORMAT========
+                        robot_eef_pose_6d = obs['robot_eef_pose_6d_rot']
+                        obs['robot_eef_pose_6d_rot'] = np.concatenate([state['robot_eef_pose_6d_rot'],obs['gripper_width'].ravel()])
+                        target_pose = obs['robot_eef_pose_6d_rot']
+                        print('Updated target pose ', target_pose)
+                        # ====================================================================
+
                         # run inference
                         with torch.no_grad():
                             s = time.time()
@@ -302,7 +310,7 @@ def main(input, output, robot_ip, match_dataset, match_episode,
                             # this action starts from the first obs step
                             action = result['action'][0].detach().to('cpu').numpy()
                             print('Inference latency:', time.time() - s)
-                        
+
                         # convert policy action to env actions
                         if delta_action:
                             assert len(action) == 1
@@ -315,7 +323,7 @@ def main(input, output, robot_ip, match_dataset, match_episode,
                         else:
                             this_target_poses = np.zeros((len(action), len(target_pose)), dtype=np.float64)
                             this_target_poses[:] = target_pose
-                            this_target_poses[:,[0,1]] = action
+                            this_target_poses[:,:6] = action #Updated
 
                         # deal with timing
                         # the same step actions are always the target for
@@ -324,6 +332,7 @@ def main(input, output, robot_ip, match_dataset, match_episode,
                         action_exec_latency = 0.01
                         curr_time = time.time()
                         is_new = action_timestamps > (curr_time + action_exec_latency)
+                        # print('Action ', len(action))
                         if np.sum(is_new) == 0:
                             # exceeded time budget, still do something
                             this_target_poses = this_target_poses[[-1]]

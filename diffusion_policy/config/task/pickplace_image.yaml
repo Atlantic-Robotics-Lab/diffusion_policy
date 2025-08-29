@@ -1,0 +1,55 @@
+name: pick_place
+
+image_shape: [3, 720, 1280]
+dataset_path: data/demo_memory #/media/camillo/Disk2/demo_memory_latest
+shape_meta: &shape_meta
+  # acceptable types: rgb, low_dim
+  obs:
+    camera_0:
+      shape: ${task.image_shape}
+      type: rgb
+    # robot0_eye_in_hand_image:
+    #   shape: [3, 84, 84]
+    #   type: rgb
+    robot_eef_pose:
+      shape: [7]
+      type: low_dim
+    # robot0_eef_quat:
+    #   shape: [4]
+    gripper_width:
+      shape: [1]
+      type: low_dim
+  action: 
+    shape: [6]
+
+env_runner:
+  _target_: diffusion_policy.env_runner.pick_place_runner.PickPlaceRunner
+  # n_train: 6
+  # n_train_vis: 2
+  # train_start_seed: 0
+  # n_test: 50
+  # n_test_vis: 4
+  # legacy_test: True
+  # test_start_seed: 100000
+  # max_steps: 300
+  # n_obs_steps: ${n_obs_steps}
+  # n_action_steps: ${n_action_steps}
+  # fps: 10
+  # past_action: ${past_action_visible}
+  # n_envs: null
+
+dataset:
+  _target_: diffusion_policy.dataset.pick_place_image_dataset.PickPlaceImageDataset
+  # zarr_path: data/demo_memory/replay_buffer.zarr
+  shape_meta: *shape_meta
+  dataset_path: ${task.dataset_path}
+  horizon: ${horizon}
+  pad_before: ${eval:'${n_obs_steps}-1+${n_latency_steps}'}
+  pad_after: ${eval:'${n_action_steps}-1'}
+  n_obs_steps: ${dataset_obs_steps}
+  n_latency_steps: ${n_latency_steps}
+  use_cache: False
+  seed: 42
+  val_ratio: 0.00
+  max_train_episodes: null
+  delta_action: False
